@@ -15,13 +15,26 @@ class CatalogController
 {
     private const CACHE_PREFIX = 'catalog:v1:products:';
     private const CACHE_TTL = 300;
+    private const PER_PAGE = 50;
 
     public function index(): void
     {
         $category = !empty($_GET['category']) ? $_GET['category'] : null;
+        $page = isset($_GET['page']) ? max(1, (int) $_GET['page']) : 1;
         $start = microtime(true);
 
-        $products = $this->cachedCatalog($category);
+        // cachedCatalog() traz a categoria inteira (sem LIMIT) — a
+        // agregação já roda sobre a base toda de qualquer forma (seção 2.4
+        // do analise-problema02.md), então paginar é só uma fatia em
+        // memória por cima do que já está cacheado, sem custo extra de
+        // banco e sem precisar de chave de cache por página.
+        $allProducts = $this->cachedCatalog($category);
+
+        $totalItems = count($allProducts);
+        $totalPages = max(1, (int) ceil($totalItems / self::PER_PAGE));
+        $page = min($page, $totalPages);
+
+        $products = array_slice($allProducts, ($page - 1) * self::PER_PAGE, self::PER_PAGE);
 
         $elapsedMs = round((microtime(true) - $start) * 1000);
 
@@ -30,6 +43,9 @@ class CatalogController
             'category' => $category,
             'elapsedMs' => $elapsedMs,
             'categories' => $this->categories(),
+            'page' => $page,
+            'totalPages' => $totalPages,
+            'totalItems' => $totalItems,
         ]);
     }
 
@@ -45,18 +61,29 @@ class CatalogController
             SET price = COALESCE(:price, price),
                 stock = COALESCE(:stock, stock)
             WHERE id = :id
-            RETURNING category
+            RETURNING category, price, stock
         ');
         $stmt->execute(['price' => $price, 'stock' => $stock, 'id' => $id]);
-        $category = $stmt->fetchColumn();
-
-        if ($category !== false) {
-            $this->invalidateCache($category);
-        }
+        $updated = $stmt->fetch();
 
         header('Content-Type: application/json');
+
+        if ($updated === false) {
+            http_response_code(404);
+            echo json_encode(['message' => 'Produto não encontrado.']);
+            return;
+        }
+
+        $this->invalidateCache($updated['category']);
+
+        // Devolve os valores confirmados pelo banco (não os que vieram do
+        // formulário) — se o usuário deixar um campo em branco, o COALESCE
+        // mantém o valor antigo, e é esse valor real que a tela precisa
+        // refletir, não o que foi (ou não foi) digitado.
         echo json_encode([
-            'message' => 'Produto atualizado. Se o catálogo estiver em cache, ele precisa refletir esta mudança.',
+            'message' => 'Produto atualizado com sucesso.',
+            'price' => money((float) $updated['price']),
+            'stock' => (int) $updated['stock'],
         ]);
     }
 
@@ -160,7 +187,7 @@ class CatalogController
             $params['category'] = $category;
         }
 
-        $sql .= ' ORDER BY p.name LIMIT 200';
+        $sql .= ' ORDER BY p.name';
 
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);

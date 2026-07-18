@@ -256,6 +256,44 @@ curto + exceção previsível em `RedisClient`. Testado com Redis parado
 (cache volta ao normal, dado gravado durante a queda aparece correto).
 Detalhamento em `analise-problema02.md`, seção 9.
 
+### Fase 2.5 — Polimento visual (HTML/CSS/JS) — concluída
+- [x] Levantar a paleta real da Esferas Software a partir do CSS do site
+      institucional (esferas.com.br) — indigo `#6278df` como cor de
+      destaque (confirmado por ~90 ocorrências no CSS do tema, em botões,
+      hovers e bordas ativas), navy `#1f2233`, cinza-azulado `#717794` e
+      coral `#fb4b79` como accent secundário; tipografia "Work Sans"
+      (mesma fonte carregada pelo site real).
+- [x] Redesenhar `style.css` com essa paleta (variáveis CSS), aplicado a
+      todas as páginas (home, relatório, catálogo): topbar, cards, tabelas
+      (com `.table-wrap` para rolagem horizontal em telas pequenas),
+      badges, formulários/filtros e botões.
+- [x] Trocar a mensagem de feedback solta do botão "Salvar" por uma
+      **modal** de confirmação — a linha da tabela só é atualizada com os
+      novos valores (vindos do banco via `RETURNING price, stock`, não do
+      formulário) **quando a modal é fechada**, não antes.
+- [x] `CatalogController::update()` passou a devolver `price`/`stock`
+      confirmados (via `UPDATE ... RETURNING category, price, stock`) e a
+      responder `404` para produto inexistente, em vez de mensagem de
+      sucesso enganosa.
+- [x] Validado com Playwright (headless, screenshots + interação real):
+      catálogo, modal aberta, e a confirmação de que a linha **não muda**
+      enquanto a modal está aberta e **muda imediatamente** ao fechá-la
+      (testado com valores aleatórios a cada execução, não hardcoded).
+      Nenhum erro de console. Home e relatório também verificados
+      visualmente com a nova paleta.
+- [x] **Paginação no catálogo** (50 produtos por página, antes eram até 200
+      numa tabela só sem navegação). Decisão de arquitetura: em vez de
+      chave de cache por página, `fetchCatalog()` deixou de ter `LIMIT` e
+      `cachedCatalog()` passou a cachear a **categoria inteira** — a
+      paginação é só um `array_slice` em PHP sobre o array já cacheado.
+      Isso mantém a estratégia de cache/invalidação da Fase 2 **inalterada**
+      (ainda só 2 chaves invalidadas por update, sem chave por página) e
+      não tem custo extra de banco: a agregação já rodava sobre a base
+      inteira mesmo com `LIMIT 200` (confirmado via `EXPLAIN ANALYZE`:
+      ~94ms sem `LIMIT` vs ~91-93ms com). Trocar de categoria via filtro
+      reseta a paginação pra página 1 automaticamente (o formulário GET só
+      envia `category`, sem `page`) — testado e validado com Playwright.
+
 ### Fase 3 — Fechamento
 - [ ] Revisar diffs, rodar a aplicação ponta a ponta (relatório + catálogo)
       no browser.

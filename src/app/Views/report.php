@@ -4,6 +4,7 @@
         Tempo de geração:
         <span class="badge timing <?= $elapsedMs < 500 ? 'fast' : '' ?>"><?= $elapsedMs ?> ms</span>
     </p>
+    <div class="table-wrap">
     <table>
         <thead>
             <tr>
@@ -28,4 +29,5 @@
             <?php endforeach; ?>
         </tbody>
     </table>
+    </div>
 </div>
