@@ -18,6 +18,7 @@
         <nav>
             <a href="/relatorio/top-clientes">Relatório de Clientes</a>
             <a href="/catalogo">Catálogo de Produtos</a>
+            <a href="/performance">Performance</a>
         </nav>
     </header>
 

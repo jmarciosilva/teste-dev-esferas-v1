@@ -25,4 +25,19 @@ class RedisClient
 
         return self::$instance;
     }
+
+    /**
+     * Versão de connection() que nunca lança exceção — devolve null se o
+     * Redis estiver indisponível. Usada em todo lugar onde o cache é
+     * opcional (cache-aside com fallback, página de métricas) e não deve
+     * derrubar a funcionalidade principal.
+     */
+    public static function tryConnection(): ?Redis
+    {
+        try {
+            return self::connection();
+        } catch (Throwable $e) {
+            return null;
+        }
+    }
 }

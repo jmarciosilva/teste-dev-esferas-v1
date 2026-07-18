@@ -6,6 +6,7 @@ require __DIR__ . '/../app/helpers.php';
 require __DIR__ . '/../app/Controllers/HomeController.php';
 require __DIR__ . '/../app/Controllers/ReportController.php';
 require __DIR__ . '/../app/Controllers/CatalogController.php';
+require __DIR__ . '/../app/Controllers/PerformanceController.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
@@ -32,6 +33,11 @@ try {
 
     if ($method === 'POST' && preg_match('#^/produtos/(\d+)$#', $path, $m)) {
         (new CatalogController())->update((int) $m[1]);
+        return;
+    }
+
+    if ($method === 'GET' && $path === '/performance') {
+        (new PerformanceController())->index();
         return;
     }
 

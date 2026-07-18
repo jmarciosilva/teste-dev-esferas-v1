@@ -97,7 +97,7 @@ class CatalogController
     private function cachedCatalog(?string $category): array
     {
         $key = $this->cacheKey($category);
-        $redis = $this->redisOrNull();
+        $redis = RedisClient::tryConnection();
 
         if ($redis !== null) {
             try {
@@ -125,7 +125,7 @@ class CatalogController
 
     private function invalidateCache(string $productCategory): void
     {
-        $redis = $this->redisOrNull();
+        $redis = RedisClient::tryConnection();
         if ($redis === null) {
             return;
         }
@@ -140,21 +140,22 @@ class CatalogController
         }
     }
 
-    private function redisOrNull(): ?Redis
-    {
-        try {
-            return RedisClient::connection();
-        } catch (Throwable $e) {
-            return null;
-        }
-    }
-
-    private function cacheKey(?string $category): string
+    /**
+     * Pública para ser reaproveitada pela página de performance
+     * (PerformanceController), que precisa montar a mesma chave pra medir
+     * miss/hit no cache real do catálogo, sem duplicar o formato aqui.
+     */
+    public function cacheKey(?string $category): string
     {
         return self::CACHE_PREFIX . ($category ?: 'all');
     }
 
-    private function fetchCatalog(?string $category): array
+    /**
+     * Pública para ser reaproveitada pela página de performance, que
+     * precisa medir o tempo da mesma consulta usada em produção sem
+     * duplicar a query de agregação aqui.
+     */
+    public function fetchCatalog(?string $category): array
     {
         $pdo = Database::connection();
 

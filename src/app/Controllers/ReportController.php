@@ -7,8 +7,26 @@ class ReportController
 {
     public function topClientes(): void
     {
-        $pdo = Database::connection();
         $start = microtime(true);
+
+        $topCustomers = $this->fetchTopClientes();
+
+        $elapsedMs = round((microtime(true) - $start) * 1000);
+
+        render('report', [
+            'customers' => $topCustomers,
+            'elapsedMs' => $elapsedMs,
+        ]);
+    }
+
+    /**
+     * Pública para ser reaproveitada pela página de performance
+     * (PerformanceController), que mede ao vivo o tempo desta mesma query
+     * sem duplicá-la.
+     */
+    public function fetchTopClientes(): array
+    {
+        $pdo = Database::connection();
 
         $stmt = $pdo->query('
             WITH spent AS (
@@ -39,11 +57,6 @@ class ReportController
         }
         unset($customer);
 
-        $elapsedMs = round((microtime(true) - $start) * 1000);
-
-        render('report', [
-            'customers' => $topCustomers,
-            'elapsedMs' => $elapsedMs,
-        ]);
+        return $topCustomers;
     }
 }

@@ -294,6 +294,54 @@ Detalhamento em `analise-problema02.md`, seção 9.
       reseta a paginação pra página 1 automaticamente (o formulário GET só
       envia `category`, sem `page`) — testado e validado com Playwright.
 
+### Fase 2.6 — Página de diagnóstico de performance (`/performance`) — concluída
+- [x] Nova rota/página, fora do fluxo de produção, pra dar visibilidade
+      tangível ao avaliador sobre o efeito das duas correções, com números
+      medidos na hora (não inventados) e histórico persistido.
+- [x] **Catálogo**: mede ao vivo, a cada carga da página, miss (direto do
+      banco) e hit (Redis), reaproveitando a mesma chave/query da aplicação
+      real (`CatalogController::fetchCatalog()`/`cacheKey()`, tornados
+      públicos só pra esse reaproveitamento — sem duplicar SQL). Mostra
+      também `INFO stats` do Redis (keyspace hits/misses, memória) e as
+      chaves `catalog:*` ativas com TTL restante.
+- [x] **Relatório**: decisão consciente de **não** re-executar o N+1 antigo
+      ao vivo (levaria ~193s e inutilizaria a própria página de
+      diagnóstico) — mostra o baseline documentado em
+      `analise-problema01.md` ao lado da query otimizada atual, medida ao
+      vivo a cada carga (via `ReportController::fetchTopClientes()`,
+      extraído do método que só renderizava antes). Badge "dentro da
+      meta"/"fora da meta" (<300ms) por execução.
+- [x] **Histórico**: cada execução é registrada num log em Redis (LPUSH +
+      LTRIM, últimas 20 por seção — `perf:log:catalog`, `perf:log:report`),
+      não só o resultado da última carga — pensado pra servir de série de
+      medições ao longo do tempo, não só um snapshot.
+- [x] Refatoração pequena de suporte: `RedisClient::tryConnection()`
+      (nunca lança exceção, usado também pelo `CatalogController`,
+      eliminando duplicação do try/catch de conexão que já existia lá).
+- [x] Testado com Playwright (3 cargas seguidas): sem erros de console,
+      histórico crescendo corretamente, e a variância do relatório
+      documentada na Fase 1 apareceu de forma real e visível no log
+      (execuções entre 258ms e 491ms na mesma sessão de teste).
+
+**Retrabalho após feedback**: a primeira versão da página tinha dois
+problemas. (1) Falta de explicação — testei sozinho e a página não deixava
+claro pra quem lê pela primeira vez o que "miss"/"hit" significam, por que
+o relatório não tem "antes" ao vivo, nem que picos ocasionais >300ms são
+esperados (documentados desde a Fase 1). Adicionei um bloco "Como ler esta
+página" no topo, callout dedicado explicando a variância do relatório, e
+um resumo agregado ("X de Y execuções recentes dentro da meta"). (2)
+Preocupação legítima do usuário ao clicar rápido entre `/catalogo` e
+`/relatorio` e ver 400-539ms — investigado: nenhum processo de teste
+ficou rodando em background (confirmado via `docker stats`), e uma bateria
+limpa de 10 requisições isoladas ficou em 240-335ms, batendo com o
+baseline já documentado. Conclusão: não é regressão, é a mesma variância
+de CPU do ambiente local ficando mais visível quando várias requisições
+acontecem próximas no tempo (clique rápido = menos espaçamento entre
+queries = mais contenção momentânea). O histórico de teste que eu mesmo
+gerei validando a página (18 execuções em rajada, 56% dentro da meta) foi
+limpo do Redis antes de entregar, pra não distorcer o diagnóstico do
+usuário com dados da minha própria sessão de testes.
+
 ### Fase 3 — Fechamento
 - [ ] Revisar diffs, rodar a aplicação ponta a ponta (relatório + catálogo)
       no browser.
