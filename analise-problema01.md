@@ -37,6 +37,32 @@ máquina foi bem além disso.
 **Meta:** menos de 300ms, sem mudar nenhum valor exibido (mesmos clientes,
 mesmos totais, mesma contagem de pedidos).
 
+**Ferramentas usadas nesta investigação** (pra deixar claro o que foi
+medição de verdade, não achismo):
+
+- **`psql`** (via `docker compose exec -T db psql ...`) — rodar as queries
+  direto no Postgres, criar os índices, `VACUUM ANALYZE`, e consultar
+  `pg_stat_activity`/`pg_stat_bgwriter`/`SHOW` pra descartar causas
+  (autovacuum rodando, configuração de paralelismo, etc.).
+- **`EXPLAIN ANALYZE` / `EXPLAIN (ANALYZE, BUFFERS)`** — a ferramenta central
+  de todo o diagnóstico: mostra o plano de execução real (não estimado),
+  tempo por nó da árvore, e se a leitura veio de memória (`shared hit`) ou
+  disco (`read`).
+- **`curl`** (com `-w "%{time_total}"`) — medir o tempo de resposta HTTP de
+  verdade, e comparar com o tempo que a própria página reporta (pra isolar
+  se a lentidão está na query ou no Apache/render).
+- **`docker compose`** (`up`, `down -v`, `stop`/`start`, `exec`, `ps`,
+  `stats`) — gerenciar o ambiente, incluindo recriar tudo do zero pra testar
+  reprodutibilidade, e monitorar CPU/memória dos containers.
+- **PowerShell** (`Get-CimInstance Win32_Processor`, `tasklist`) — checar a
+  carga de CPU do host e processos concorrentes, decisivo pra confirmar que
+  os picos de tempo eram contenção de máquina, não bug de query.
+- **Navegador (Firefox, Edge)** — testes manuais reais, inclusive depois de
+  recriar o ambiente do zero, pra confirmar que o padrão se repetia fora do
+  terminal.
+- **`php -l`** — lint de sintaxe em todo arquivo PHP alterado, antes de
+  qualquer teste funcional.
+
 ---
 
 ## 2. Causa raiz, explicada em profundidade

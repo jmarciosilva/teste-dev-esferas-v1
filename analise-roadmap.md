@@ -342,9 +342,30 @@ gerei validando a página (18 execuções em rajada, 56% dentro da meta) foi
 limpo do Redis antes de entregar, pra não distorcer o diagnóstico do
 usuário com dados da minha própria sessão de testes.
 
-### Fase 3 — Fechamento
-- [ ] Revisar diffs, rodar a aplicação ponta a ponta (relatório + catálogo)
-      no browser.
-- [ ] Escrever `SOLUCAO.md` com antes/depois de performance, estratégia de
-      cache e trade-offs/suposições assumidas.
-- [ ] Conferir se algo do enunciado ficou pendente.
+### Fase 3 — Fechamento — concluída
+- [x] Revisão ponta a ponta com ambiente **recriado do zero**
+      (`docker compose down -v` + `up -d --build` + `db/seed.php` +
+      `db/indexes.sql`) — não só validado no ambiente já "aquecido" das
+      fases anteriores. Todas as rotas testadas (`/`, `/relatorio/top-clientes`,
+      `/catalogo`, `/performance`, `POST /produtos/{id}`), todas 200 OK.
+- [x] Durante essa revisão, uma bateria inicial do relatório veio
+      consistentemente alta (337-585ms) logo após o rebuild+seed. Antes de
+      escrever qualquer número no `SOLUCAO.md`, investiguei em vez de
+      aceitar ou descartar: confirmei via `pg_stat_activity` que não havia
+      autovacuum/query concorrente, via `EXPLAIN (ANALYZE, BUFFERS)` que
+      continuava tudo `shared hit` (zero disco) e via `Win32_Processor.LoadPercentage`
+      que o host estava a 55% de CPU — resultado direto de eu mesmo ter
+      acabado de martelar a máquina com rebuild + seed de ~700 mil linhas +
+      bateria de testes. Depois de um período de acomodação, uma nova
+      bateria (SQL direto via `psql` **e** via HTTP completo) voltou pra
+      faixa já documentada (235-352ms). Os números finais do `SOLUCAO.md`
+      vêm dessa segunda bateria, não da primeira.
+- [x] Achado durante a revisão: o `README.md` não mencionava aplicar
+      `db/indexes.sql` depois do seed (só o `schema.sql` roda automático via
+      `docker-entrypoint-initdb.d`). Corrigido — passo adicionado nas duas
+      seções relevantes do README.
+- [x] Escrito `SOLUCAO.md` — resumo curto (conforme o enunciado pede) no
+      mesmo tom pessoal de `analise-problema01.md`/`analise-problema02.md`,
+      com antes/depois, estratégia de cache, trade-offs/suposições
+      consolidados, e link pros três documentos de apoio pra quem quiser o
+      raciocínio completo.

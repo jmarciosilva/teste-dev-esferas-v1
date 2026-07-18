@@ -46,6 +46,27 @@ Livros, Mercado, Moda (8 no total).
   página `/catalogo` for carregada** (F5, navegação, nova aba) tem que
   refletir a mudança, sem esperar o TTL do cache expirar".
 
+**Ferramentas usadas nesta investigação e na implementação:**
+
+- **`psql`** — rodar a query de agregação isolada com `EXPLAIN ANALYZE` pra
+  medir o custo real, com e sem filtro de categoria.
+- **`redis-cli`** (`GET`, `KEYS`, `TTL`, `DEL`, `FLUSHALL`, `INFO`) —
+  inspecionar o conteúdo cacheado durante o desenvolvimento, confirmar
+  hit/miss, medir TTL restante, e forçar cenários de teste (cache vazio,
+  chave específica ausente).
+- **`curl`** — medir tempo de resposta do `GET /catalogo` (com e sem
+  cache) e testar o `POST /produtos/{id}` diretamente, sem depender do
+  formulário na tela.
+- **`docker compose stop redis` / `start redis`** — simular queda do Redis
+  de propósito, pra testar se a aplicação degrada graciosamente ou quebra.
+- **Playwright** (headless Chromium via Node.js) — automatizar o fluxo real
+  no navegador (editar produto, abrir modal, fechar modal, conferir se a
+  linha da tabela atualizou), capturar screenshots pra validação visual, e
+  checar o console por erros de JS.
+- **Navegador manual (Firefox)** — o mesmo fluxo, mas testado à mão, pra
+  confirmar que bate com o que a automação mostrou.
+- **`php -l`** — lint de sintaxe em todo arquivo PHP alterado.
+
 ---
 
 ## 2. Causa raiz, explicada em profundidade
