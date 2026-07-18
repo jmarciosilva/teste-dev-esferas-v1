@@ -366,21 +366,322 @@ quero validar na prática assim que implementar, não só assumir no papel.
 
 ---
 
-## 5. Próxima etapa
+## 5. Implementação — código antes e depois
 
-Com as 4 decisões fechadas, o próximo passo é implementar:
+As 4 decisões da seção 4 foram implementadas em
+`src/app/Controllers/CatalogController.php`.
 
-1. Cache-aside na leitura (`CatalogController::index()` /
-   `fetchCatalog()`), usando `RedisClient::connection()`.
-2. Trocar o `UPDATE` do `update()` por `UPDATE ... RETURNING category` e
-   invalidar as 2 chaves correspondentes.
-3. Validar que o conteúdo servido do cache é **idêntico** ao que a query
-   direta no banco retornaria (mesmo teste de "resultado não pode mudar"
-   que fizemos no Problema 1).
-4. Testar o fluxo de ponta a ponta: carregar `/catalogo`, editar um produto
-   pelo botão "Salvar", recarregar a página e confirmar que o dado novo
-   aparece — sem esperar os 5 minutos de TTL.
+### 5.1 Leitura: cache-aside em `index()`
 
-As seções de implementação (código antes/depois), validação e testes vão
-ser adicionadas a este documento depois disso, no mesmo formato usado no
-`analise-problema01.md`.
+```php
+public function index(): void
+{
+    $category = !empty($_GET['category']) ? $_GET['category'] : null;
+    $start = microtime(true);
+
+    $products = $this->cachedCatalog($category); // antes: $this->fetchCatalog($category)
+
+    $elapsedMs = round((microtime(true) - $start) * 1000);
+
+    render('catalog', [
+        'products' => $products,
+        'category' => $category,
+        'elapsedMs' => $elapsedMs,
+        'categories' => $this->categories(),
+    ]);
+}
+
+private function cachedCatalog(?string $category): array
+{
+    $redis = RedisClient::connection();
+    $key = $this->cacheKey($category);
+
+    $cached = $redis->get($key);
+    if ($cached !== false) {
+        return json_decode($cached, true); // HIT
+    }
+
+    $products = $this->fetchCatalog($category); // MISS — query original, sem alteração
+    $redis->setex($key, self::CACHE_TTL, json_encode($products));
+
+    return $products;
+}
+
+private function cacheKey(?string $category): string
+{
+    return self::CACHE_PREFIX . ($category ?: 'all'); // catalog:v1:products:{slug}
+}
+```
+
+`fetchCatalog()` (a query original, com o `JOIN`/`GROUP BY` de agregação)
+**não foi alterada** — o cache só envolve essa função por fora, no clássico
+padrão *cache-aside*: tenta o Redis, em *miss* consulta o banco e popula o
+cache antes de retornar.
+
+### 5.2 Escrita: `update()` com invalidação seletiva
+
+```php
+public function update(int $id): void
+{
+    $pdo = Database::connection();
+
+    $price = isset($_POST['price']) && $_POST['price'] !== '' ? (float) $_POST['price'] : null;
+    $stock = isset($_POST['stock']) && $_POST['stock'] !== '' ? (int) $_POST['stock'] : null;
+
+    $stmt = $pdo->prepare('
+        UPDATE products
+        SET price = COALESCE(:price, price),
+            stock = COALESCE(:stock, stock)
+        WHERE id = :id
+        RETURNING category
+    ');
+    $stmt->execute(['price' => $price, 'stock' => $stock, 'id' => $id]);
+    $category = $stmt->fetchColumn(); // categoria do produto, sem SELECT extra
+
+    if ($category !== false) {
+        $this->invalidateCache($category);
+    }
+
+    header('Content-Type: application/json');
+    echo json_encode(['message' => 'Produto atualizado...']);
+}
+
+private function invalidateCache(string $productCategory): void
+{
+    $redis = RedisClient::connection();
+    $redis->del($this->cacheKey(null));           // catalog:v1:products:all
+    $redis->del($this->cacheKey($productCategory)); // catalog:v1:products:{categoria}
+}
+```
+
+A única mudança na query de escrita foi acrescentar `RETURNING category`
+— continua **uma única ida ao banco**, só que agora ela também informa qual
+chave de categoria precisa cair.
+
+---
+
+## 6. Bug encontrado durante os testes manuais (fora do escopo do cache, mas registrado)
+
+Ao testar no navegador, notei que a mensagem de feedback do botão "Salvar"
+("Produto atualizado...") nunca aparecia, mesmo com a atualização
+funcionando corretamente no banco. Investigando, o bug é **pré-existente**
+no HTML/JS original do desafio — não foi introduzido pela minha
+implementação de cache, só ficou visível agora porque testamos esse fluxo
+específico pela primeira vez.
+
+**Causa**: em `src/app/Views/catalog.php`, a `<div class="update-feedback">`
+fica **fora** do `<form>` (é irmã dele, não filha):
+
+```html
+<td>
+    <form class="product-actions" data-product-update method="post" action="/produtos/...">
+        ...
+        <button type="submit">Salvar</button>
+    </form>
+    <div class="muted update-feedback"></div>  <!-- fora do <form> -->
+</td>
+```
+
+E em `src/public/assets/app.js`, a busca pelo elemento de feedback partia do
+próprio `form`:
+
+```js
+const feedback = form.querySelector('.update-feedback'); // nunca encontra — está fora do form
+```
+
+`querySelector` só procura **descendentes**, então `feedback` era sempre
+`null`, e o `if (feedback)` silenciosamente não fazia nada — a requisição
+`POST` funcionava (o preço/estoque mudavam no banco), só a mensagem visual
+nunca tinha chance de aparecer.
+
+**Correção aplicada** (`src/public/assets/app.js`):
+
+```js
+// .update-feedback é irmã do <form> (fica fora dele no HTML), então a
+// busca precisa partir do elemento pai, não do próprio form.
+const feedback = form.parentElement.querySelector('.update-feedback');
+```
+
+Optei por corrigir no JS (buscar a partir do `<td>` pai) em vez de mexer no
+HTML/`catalog.php`, por ser a mudança de menor risco — não altera estrutura
+nem estilo da tabela, só onde o JS procura o elemento.
+
+---
+
+## 7. Validação: conteúdo do cache idêntico ao do banco
+
+Mesmo tipo de checagem feita no Problema 1: com uma chave já populada,
+capturei a resposta servida do cache, depois apaguei a chave (forçando
+*miss*) e comparei o HTML das duas respostas.
+
+```
+DEL catalog:v1:products:all
+GET /catalogo  (miss, 117ms)
+GET /catalogo  (hit, 1ms — já visto antes)
+
+diff <(resposta do cache) <(resposta direto do banco)
+→ idêntico, fora da linha do "Tempo de geração"
+```
+
+**Teste de invalidação seletiva**: populei o cache de 3 chaves
+(`all`, `Eletrônicos`, `Moda`), atualizei um produto da categoria
+Eletrônicos (id 2, "Arroz C81E7", preço `2717.76→999.99`, estoque
+`81→42`) e confirmei via `redis-cli KEYS "catalog:*"`:
+
+| Antes do update | Depois do update |
+|---|---|
+| `catalog:v1:products:all` | ~~`catalog:v1:products:all`~~ (removida) |
+| `catalog:v1:products:Eletrônicos` | ~~`catalog:v1:products:Eletrônicos`~~ (removida) |
+| `catalog:v1:products:Moda` | `catalog:v1:products:Moda` (**intacta**) |
+
+Confirma a seção 4.3 na prática: só as 2 chaves realmente afetadas somem;
+`Moda` (categoria não relacionada ao produto atualizado) permanece em cache,
+sem recálculo desnecessário. A próxima carga de `/catalogo` (com ou sem
+filtro `Eletrônicos`) já veio com `R$ 999,99` / estoque `42`, sem esperar o
+TTL de 5 minutos.
+
+---
+
+## 8. Testes manuais no navegador
+
+Sequência real testada por mim (Firefox), depois de `docker compose exec
+redis redis-cli FLUSHALL` pra garantir estado limpo:
+
+| Ação | Tempo mostrado |
+|---|---|
+| `/catalogo` (1ª carga) | 101 ms (*miss*) |
+| F5 | 1 ms (*hit*) |
+| Ctrl+F5 (recarga forçada) | 1 ms (*hit* — confirma que não é cache do navegador, é o Redis) |
+| Filtro categoria "Esportes" (1ª vez) | 85 ms (*miss* — chave nova) |
+| Filtro categoria "Casa" (1ª vez) | 80 ms (*miss* — chave nova) |
+
+Depois, editei o primeiro produto da tabela (preço `R$ 2.534,74 → 5.000,32`,
+estoque `119 → 250`) e cliquei em "Salvar":
+
+- **1ª tentativa** (antes da correção do bug da seção 6): nenhuma mensagem
+  de feedback apareceu; precisei dar F5 pra confirmar visualmente que o
+  preço/estoque tinham mudado — o que confirmou que a **invalidação
+  funcionou** (dado correto após F5), mesmo com o bug de UI escondendo a
+  confirmação.
+- **2ª tentativa** (depois da correção, com hard refresh da página pra
+  carregar o `app.js` corrigido): a mensagem "Produto atualizado..."
+  apareceu corretamente ao lado do botão.
+- Em ambos os casos, a **tabela em si só reflete a mudança após F5** — isso
+  é esperado e não é bug: como registrado na seção 1, o clique em "Salvar"
+  só faz um `POST` assíncrono, sem recarregar a tabela; quem garante que o
+  F5 traga o dado certo é a invalidação de cache, não o JS da requisição.
+
+---
+
+## 9. Resiliência: o que acontece se o Redis cair
+
+Não estava nas 4 decisões originais, mas testei deliberadamente (`docker
+compose stop redis`) porque é uma pergunta natural pra qualquer camada de
+cache: **o recurso principal deveria depender da disponibilidade do
+cache?**
+
+**Antes da correção**: não. `RedisClient::connection()` chamava
+`$redis->connect($host, $port)` sem tratamento — com o Redis fora do ar,
+isso disparava um **warning nativo do driver** (`php_network_getaddresses`)
+e a página `/catalogo` quebrava inteira (nem chegava a mostrar os produtos),
+porque nada no `CatalogController` tratava a falha.
+
+**Correção aplicada:**
+
+1. `RedisClient::connection()` passou a usar timeout curto de conexão
+   (1 segundo) e converter falha de conexão numa exceção única e
+   previsível (`RuntimeException`), em vez de deixar o driver emitir um
+   warning solto:
+
+   ```php
+   $connected = @$redis->connect($host, $port, 1.0);
+   if (!$connected) {
+       throw new RuntimeException("Não foi possível conectar ao Redis em {$host}:{$port}.");
+   }
+   ```
+
+2. `CatalogController` passou a tratar o Redis como **opcional**: tanto a
+   leitura (`cachedCatalog()`) quanto a invalidação (`invalidateCache()`)
+   envolvem as chamadas ao Redis em `try/catch`, com fallback pra servir
+   direto do banco quando o cache não responde:
+
+   ```php
+   private function cachedCatalog(?string $category): array
+   {
+       $key = $this->cacheKey($category);
+       $redis = $this->redisOrNull();
+
+       if ($redis !== null) {
+           try {
+               $cached = $redis->get($key);
+               if ($cached !== false) {
+                   return json_decode($cached, true);
+               }
+           } catch (Throwable $e) {
+               $redis = null;
+           }
+       }
+
+       $products = $this->fetchCatalog($category); // sempre funciona, com ou sem Redis
+
+       if ($redis !== null) {
+           try {
+               $redis->setex($key, self::CACHE_TTL, json_encode($products));
+           } catch (Throwable $e) {
+               // ignora — leitura já resolvida pelo banco
+           }
+       }
+
+       return $products;
+   }
+   ```
+
+   Em `invalidateCache()`, a mesma lógica: se o Redis não responder, a
+   função simplesmente retorna sem lançar erro — a escrita em `products`
+   já foi confirmada no Postgres **antes** da tentativa de invalidação, então
+   uma falha no Redis nunca desfaz nem impede a atualização de
+   preço/estoque.
+
+**Teste de verificação** (`docker compose stop redis`):
+
+| Ação com Redis parado | Resultado |
+|---|---|
+| `GET /catalogo` | 200 OK, 200 produtos renderizados normalmente (mais lento, direto do banco) |
+| `POST /produtos/2` (novo preço/estoque) | 200 OK, gravado no Postgres normalmente |
+
+Religuei o Redis (`docker compose start redis`) depois e confirmei: cache
+voltou a funcionar (miss→hit) e o produto atualizado **durante a queda**
+apareceu corretamente na tela — nada ficou inconsistente pela falha
+temporária.
+
+---
+
+## 10. Trade-offs e decisões assumidas
+
+- **Chave por combinação de filtro (9 no máximo)** em vez de um blob único
+  filtrado em PHP — trade-off de simplicidade/segurança de comportamento
+  contra uma economia de memória irrelevante no Redis (seção 4.1).
+- **TTL de 5 minutos como rede de segurança**, não como mecanismo principal
+  de atualização — a atualização real acontece via invalidação ativa no
+  `update()` (seção 4.2).
+- **Invalidação seletiva (2 chaves) assume que a categoria do produto nunca
+  muda** via `update()` — verdadeiro hoje (só mexe em `price`/`stock`), mas
+  registrado como suposição a revisitar se o escopo mudar (seção 4.3).
+- **Bug de feedback do botão "Salvar" (seção 6)**: pré-existente, não
+  relacionado ao cache, corrigido por ser uma mudança de baixo risco que
+  melhora a demonstração da solução (o enunciado permite ajustes de
+  frontend como diferencial).
+- **Sem invalidação por TTL observada nos testes** — não cheguei a esperar
+  5 minutos pra validar a expiração natural; a confiança no TTL vem da
+  configuração explícita (`SETEX`) e da checagem de `TTL` via `redis-cli`
+  (seção 4.2 / 7), não de uma espera cronometrada.
+- **Resiliência a falha do Redis (seção 9)**: não estava nas 4 decisões
+  originais — surgiu de uma pergunta que fiz depois de "terminar": *e se o
+  Redis cair?* Testei (`docker compose stop redis`) e descobri que sem
+  tratamento a página quebrava inteira. Corrigido com fallback via
+  `try/catch`: leitura degrada pra consulta direta ao banco, e a
+  invalidação falha silenciosamente sem impedir a escrita em `products`
+  (que já foi confirmada no Postgres antes da tentativa de invalidar).
+  Trade-off consciente: **não fiz retry nem circuit breaker** — um Redis
+  fora do ar significa "sem cache até voltar", o que é aceitável pro escopo
+  deste desafio.

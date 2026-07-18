@@ -1,22 +1,27 @@
 <?php
 
 /**
- * Catálogo de produtos.
+ * Catálogo de produtos, com cache-aside no Redis.
  *
- * ATENÇÃO: a cada requisição os agregados de avaliação e vendas são
- * recalculados do zero sobre as tabelas inteiras, mesmo que esses dados
- * só mudem de forma esporádica. Faz parte do desafio introduzir uma
- * camada de cache (Redis) para essa leitura, incluindo a invalidação
- * correta quando um produto é atualizado em update().
+ * Estratégia (detalhada em analise-problema02.md):
+ * - Chave: catalog:v1:products:{categoria|all} — uma entrada por filtro.
+ * - TTL: 5 minutos, rede de segurança (o único dado mutável é price/stock,
+ *   coberto por invalidação ativa em update()).
+ * - Invalidação: update() usa RETURNING category pra descobrir, numa única
+ *   ida ao banco, quais das duas chaves afetadas (a categoria do produto
+ *   + "all") precisam ser removidas do cache.
  */
 class CatalogController
 {
+    private const CACHE_PREFIX = 'catalog:v1:products:';
+    private const CACHE_TTL = 300;
+
     public function index(): void
     {
         $category = !empty($_GET['category']) ? $_GET['category'] : null;
         $start = microtime(true);
 
-        $products = $this->fetchCatalog($category);
+        $products = $this->cachedCatalog($category);
 
         $elapsedMs = round((microtime(true) - $start) * 1000);
 
@@ -40,13 +45,86 @@ class CatalogController
             SET price = COALESCE(:price, price),
                 stock = COALESCE(:stock, stock)
             WHERE id = :id
+            RETURNING category
         ');
         $stmt->execute(['price' => $price, 'stock' => $stock, 'id' => $id]);
+        $category = $stmt->fetchColumn();
+
+        if ($category !== false) {
+            $this->invalidateCache($category);
+        }
 
         header('Content-Type: application/json');
         echo json_encode([
             'message' => 'Produto atualizado. Se o catálogo estiver em cache, ele precisa refletir esta mudança.',
         ]);
+    }
+
+    /**
+     * Cache-aside com fallback: se o Redis estiver indisponível em qualquer
+     * ponto (conexão, leitura ou escrita), a função degrada para servir
+     * direto do banco em vez de derrubar a página inteira. O cache é uma
+     * otimização de performance, não deveria ser um ponto único de falha
+     * para o catálogo funcionar.
+     */
+    private function cachedCatalog(?string $category): array
+    {
+        $key = $this->cacheKey($category);
+        $redis = $this->redisOrNull();
+
+        if ($redis !== null) {
+            try {
+                $cached = $redis->get($key);
+                if ($cached !== false) {
+                    return json_decode($cached, true);
+                }
+            } catch (Throwable $e) {
+                $redis = null; // Redis falhou no meio da leitura — segue sem cache.
+            }
+        }
+
+        $products = $this->fetchCatalog($category);
+
+        if ($redis !== null) {
+            try {
+                $redis->setex($key, self::CACHE_TTL, json_encode($products));
+            } catch (Throwable $e) {
+                // Ignora falha ao popular o cache — a leitura já foi resolvida pelo banco.
+            }
+        }
+
+        return $products;
+    }
+
+    private function invalidateCache(string $productCategory): void
+    {
+        $redis = $this->redisOrNull();
+        if ($redis === null) {
+            return;
+        }
+
+        try {
+            $redis->del($this->cacheKey(null));
+            $redis->del($this->cacheKey($productCategory));
+        } catch (Throwable $e) {
+            // Ignora falha ao invalidar — a escrita no Postgres já foi concluída;
+            // o TTL (seção 4.2 do analise-problema02.md) é a rede de segurança
+            // pra esse cenário.
+        }
+    }
+
+    private function redisOrNull(): ?Redis
+    {
+        try {
+            return RedisClient::connection();
+        } catch (Throwable $e) {
+            return null;
+        }
+    }
+
+    private function cacheKey(?string $category): string
+    {
+        return self::CACHE_PREFIX . ($category ?: 'all');
     }
 
     private function fetchCatalog(?string $category): array

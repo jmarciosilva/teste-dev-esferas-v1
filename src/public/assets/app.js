@@ -8,7 +8,9 @@ document.addEventListener('submit', function (event) {
 
     const url = form.getAttribute('action');
     const formData = new FormData(form);
-    const feedback = form.querySelector('.update-feedback');
+    // .update-feedback é irmã do <form> (fica fora dele no HTML), então a
+    // busca precisa partir do elemento pai, não do próprio form.
+    const feedback = form.parentElement.querySelector('.update-feedback');
 
     fetch(url, {
         method: 'POST',

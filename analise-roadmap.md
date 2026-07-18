@@ -210,22 +210,51 @@ view materializada), que traria de volta risco de dado desatualizado — fora
 do escopo do Problema 1. Detalhamento completo dos testes (manuais e da IA)
 em `analise-problema01.md`.
 
-### Fase 2 — Problema 2 (Catálogo com Redis)
+### Fase 2 — Problema 2 (Catálogo com Redis) — concluída
 - [x] Analisar o código do `/catalogo` (`CatalogController`) e a causa raiz
       da falta de cache (ver seção acima e `analise-problema02.md`).
 - [x] Definir estratégia de cache (chave, TTL, invalidação) — ver seção
       acima e `analise-problema02.md`, seção 4.
-- [ ] Implementar cache-aside na leitura (`CatalogController::index()` /
+- [x] Implementar cache-aside na leitura (`CatalogController::index()` /
       `fetchCatalog()`) usando `RedisClient::connection()`.
-- [ ] Trocar o `UPDATE` do `update()` por `UPDATE ... RETURNING category` e
+- [x] Trocar o `UPDATE` do `update()` por `UPDATE ... RETURNING category` e
       invalidar as 2 chaves correspondentes (`all` + categoria do produto).
-- [ ] Validar que o conteúdo servido do cache é idêntico ao que a query
+- [x] Validar que o conteúdo servido do cache é idêntico ao que a query
       direta no banco retornaria.
-- [ ] Testar o fluxo de ponta a ponta: carregar `/catalogo`, editar produto
+- [x] Testar o fluxo de ponta a ponta: carregar `/catalogo`, editar produto
       via botão "Salvar", recarregar e confirmar dado atualizado sem
       esperar o TTL.
-- [ ] Documentar implementação, validação e testes em
+- [x] Documentar implementação, validação e testes em
       `analise-problema02.md` (mesmo formato do Problema 1).
+
+**Resultado**: cache-aside implementado só em
+`src/app/Controllers/CatalogController.php` (`fetchCatalog()` original
+intocada). Miss ~80-130ms → hit ~1-2ms, testado por categoria e sem filtro.
+Invalidação seletiva testada (atualizar produto de uma categoria só
+invalida `all` + a própria categoria; outras categorias em cache
+permanecem intactas) e o dado novo aparece na carga seguinte, sem esperar
+o TTL de 5 minutos. Conteúdo servido do cache validado como idêntico ao
+vindo direto do banco (diff vazio, fora do tempo de geração).
+
+**Bug pré-existente encontrado e corrigido durante o teste manual**: o
+botão "Salvar" nunca mostrava a mensagem de feedback — `app.js` buscava o
+elemento `.update-feedback` a partir do `<form>`, mas esse `<div>` fica
+fora dele no HTML (`catalog.php`), então `querySelector` nunca encontrava.
+Não é bug introduzido pelo cache (a invalidação funcionava mesmo sem a
+mensagem aparecer — confirmado via F5), mas foi corrigido por ser uma
+mudança de baixo risco (`src/public/assets/app.js`, busca a partir de
+`form.parentElement`) que melhora a demonstração da solução. Detalhamento
+completo em `analise-problema02.md`, seções 5-8.
+
+**Resiliência a falha do Redis (achado pós-implementação)**: testei
+derrubar o container do Redis (`docker compose stop redis`) e a página
+`/catalogo` quebrava inteira em vez de continuar funcionando direto do
+banco. Corrigido com fallback via `try/catch` em `CatalogController`
+(leitura e invalidação toleram Redis indisponível) e conexão com timeout
+curto + exceção previsível em `RedisClient`. Testado com Redis parado
+(catálogo renderiza normalmente, update salva no banco) e religado depois
+(cache volta ao normal, dado gravado durante a queda aparece correto).
+Detalhamento em `analise-problema02.md`, seção 9.
 
 ### Fase 3 — Fechamento
 - [ ] Revisar diffs, rodar a aplicação ponta a ponta (relatório + catálogo)
