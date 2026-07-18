@@ -1,3 +1,7 @@
 .DS_Store
 *.log
 internal/*
+
+# Configurações locais do Claude Code (específicas da minha máquina/sessão,
+# não devem ir para o repositório do desafio)
+.claude/
