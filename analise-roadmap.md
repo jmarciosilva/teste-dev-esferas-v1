@@ -105,6 +105,63 @@ problema não é uma query lenta, é uma query razoavelmente rápida **executada
 
 ---
 
+## Problema 2 — Catálogo de Produtos sem cache (`/catalogo`)
+
+### Causa raiz
+
+Diferente do Problema 1, não é um padrão de acesso errado (N+1) — é
+**computação redundante**: `CatalogController::fetchCatalog()`
+(`src/app/Controllers/CatalogController.php`) roda, em **todo**
+`GET /catalogo`, duas subconsultas de agregação sobre a base inteira
+(`product_reviews`, 60.000 linhas, para `avg_rating`/`reviews_count`; e
+`order_items`, 499.524 linhas, para `total_sold`), mesmo esses dados não
+mudando a cada request. `EXPLAIN ANALYZE` real: ~91-93ms de execução,
+dominado por `Parallel Seq Scan` em `order_items`. `RedisClient.php` existe
+no projeto mas não é usado em nenhum fluxo de leitura.
+
+**Achado que molda a estratégia**: o filtro de categoria (`?category=`)
+**não reduz o custo da query** — as duas subconsultas de agregação
+calculam para os 3.000 produtos independente do filtro; o `WHERE
+p.category` só filtra o resultado final. Ou seja, cachear "uma categoria" e
+"todas as categorias" custa o mesmo para gerar no banco.
+
+Outro detalhe relevante: o botão "Salvar" do catálogo faz um `fetch()`
+assíncrono (`src/public/assets/app.js`) que só atualiza uma mensagem de
+feedback — não recarrega a tabela. Logo, o requisito real de invalidação é
+"a **próxima carga** de `/catalogo` reflete a mudança", não "a resposta do
+POST reflete a mudança".
+
+Detalhamento completo (código, planos de execução, medições) em
+`analise-problema02.md`.
+
+### Estratégia de cache definida (Cache-Aside)
+
+1. **Chave**: `catalog:v1:products:{categoria|all}` — no máximo 9 chaves (8
+   categorias + `all`), mapeando 1:1 com a assinatura de
+   `fetchCatalog(?string $category)` que já existe. `v1` é um prefixo de
+   versão estático (escape manual pra mudança futura de formato, não é o
+   mecanismo de invalidação).
+2. **TTL**: 300s (5 minutos) — como o único dado mutável (`price`/`stock`)
+   é coberto por invalidação ativa, o TTL funciona como rede de segurança,
+   não como mecanismo principal de atualização.
+3. **Invalidação**: no `update()`, trocar `UPDATE ... WHERE id = :id` por
+   `UPDATE ... WHERE id = :id RETURNING category` (sem round trip extra) e
+   invalidar só as **2 chaves realmente afetadas** — `catalog:v1:products:all`
+   e `catalog:v1:products:{categoria-do-produto}` — em vez de invalidar as 9
+   combinações ou manter um contador de versão global. Suposição registrada:
+   isso só é correto enquanto `update()` não alterar a categoria do produto
+   (hoje só mexe em `price`/`stock`).
+4. **Serialização**: JSON (`json_encode`/`json_decode`), mapeamento direto
+   do array associativo que `PDO::fetchAll()` já retorna; inspecionável via
+   `redis-cli` durante o desenvolvimento.
+
+Raciocínio completo (incluindo alternativas descartadas — blob único
+filtrado em PHP, rastreamento de chaves ativas, contador de versão global —
+e por que cada uma perdeu para a proposta acima) em `analise-problema02.md`,
+seção 4.
+
+---
+
 ## Roadmap de execução
 
 ### Fase 0 — Diagnóstico (concluída)
@@ -154,12 +211,21 @@ do escopo do Problema 1. Detalhamento completo dos testes (manuais e da IA)
 em `analise-problema01.md`.
 
 ### Fase 2 — Problema 2 (Catálogo com Redis)
-- [ ] Analisar o código do `/catalogo` (`CatalogController`) e a causa raiz
-      da falta de cache — a ser feito depois de fechar a Fase 1.
-- [ ] Definir estratégia de cache (chave, TTL, invalidação) com base nessa
-      análise.
-- [ ] Detalhar as tarefas desta fase no roadmap assim que a análise estiver
-      pronta.
+- [x] Analisar o código do `/catalogo` (`CatalogController`) e a causa raiz
+      da falta de cache (ver seção acima e `analise-problema02.md`).
+- [x] Definir estratégia de cache (chave, TTL, invalidação) — ver seção
+      acima e `analise-problema02.md`, seção 4.
+- [ ] Implementar cache-aside na leitura (`CatalogController::index()` /
+      `fetchCatalog()`) usando `RedisClient::connection()`.
+- [ ] Trocar o `UPDATE` do `update()` por `UPDATE ... RETURNING category` e
+      invalidar as 2 chaves correspondentes (`all` + categoria do produto).
+- [ ] Validar que o conteúdo servido do cache é idêntico ao que a query
+      direta no banco retornaria.
+- [ ] Testar o fluxo de ponta a ponta: carregar `/catalogo`, editar produto
+      via botão "Salvar", recarregar e confirmar dado atualizado sem
+      esperar o TTL.
+- [ ] Documentar implementação, validação e testes em
+      `analise-problema02.md` (mesmo formato do Problema 1).
 
 ### Fase 3 — Fechamento
 - [ ] Revisar diffs, rodar a aplicação ponta a ponta (relatório + catálogo)
