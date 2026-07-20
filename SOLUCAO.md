@@ -192,6 +192,17 @@ docker compose exec app php db/seed.php
 docker compose exec -T db psql -U teste_esferas -d teste_esferas < db/indexes.sql
 ```
 
+No Windows, se estiver usando **PowerShell** (não bash), o operador `<` não é
+suportado (`RedirectionNotSupported`) — troque a última linha por uma destas:
+
+```powershell
+Get-Content db/indexes.sql | docker compose exec -T db psql -U teste_esferas -d teste_esferas
+```
+
+```powershell
+cmd /c "docker compose exec -T db psql -U teste_esferas -d teste_esferas < db/indexes.sql"
+```
+
 Depois:
 
 - `/relatorio/top-clientes` — tempo de geração no topo da página.
